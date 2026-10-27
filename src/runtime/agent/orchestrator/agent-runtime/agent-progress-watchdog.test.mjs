@@ -63,6 +63,23 @@ test('a per-agent first-response deadline applies above the floor; 0 keeps it of
   assert.equal(resolveAgentWatchdogPolicy('art-director', { firstResponseTimeoutMs: 0 }).firstTransportMs, 0);
 });
 
+test('a provider idle budget floors hidden and public agent idle deadlines one tick above it', () => {
+  for (const agent of ['cycle1-agent', 'worker']) {
+    const baseline = resolveAgentWatchdogPolicy(agent).idleStaleMs;
+    assert.equal(
+      resolveAgentWatchdogPolicy(agent, { providerIdleTimeoutMs: undefined }).idleStaleMs,
+      baseline,
+      `${agent} keeps its existing idle deadline without a provider budget`
+    );
+    const providerIdleTimeoutMs = baseline + 12_345;
+    assert.equal(
+      resolveAgentWatchdogPolicy(agent, { providerIdleTimeoutMs }).idleStaleMs,
+      providerIdleTimeoutMs + STALL_TICK_MS,
+      `${agent} waits one watchdog tick past the provider budget`
+    );
+  }
+});
+
 test('a long tool call is not a stall while its heartbeat keeps progress fresh', () => {
   const policy = resolveAgentWatchdogPolicy('worker');
   const now = 10_000_000;

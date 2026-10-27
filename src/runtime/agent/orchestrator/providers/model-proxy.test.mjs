@@ -442,15 +442,16 @@ test('a PC-side wire reroute is adopted by the daemon session and not repeated',
   assert.equal(other.wireRoute.wire, 'responses');
 });
 
-test('the proxied provider forwards the PC’s first-response budget, model-specific first', async () => {
+test('the proxied provider forwards the PC’s watchdog budget, model-specific first', async () => {
   const { ModelProxyProvider } = await import('./model-proxy-provider.mjs');
-  const providerBudget = { transportMs: 130_000, semanticMs: 250_000 };
-  const argonBudget = { transportMs: 577_000, semanticMs: 1_147_000 };
+  const providerBudget = { transportMs: 130_000, semanticMs: 250_000, idleMs: 360_000 };
+  const argonBudget = { transportMs: 577_000, semanticMs: 1_147_000, idleMs: 720_000 };
   const channel = {
     request: async () => ({
-      models: ['gemini-4-argon', 'plain'],
+      models: ['gemini-4-argon', 'idle-only', 'plain'],
       modelInfo: {
         'gemini-4-argon': { id: 'gemini-4-argon', firstResponseBudget: argonBudget },
+        'idle-only': { id: 'idle-only', firstResponseBudget: { idleMs: 420_000 } },
         plain: { id: 'plain' },
         broken: { firstResponseBudget: { transportMs: 'soon', semanticMs: -1 } },
       },
@@ -465,9 +466,15 @@ test('the proxied provider forwards the PC’s first-response budget, model-spec
   assert.deepEqual(provider.firstResponseBudget('gemini-4-argon'), providerBudget);
   await provider.listModels();
   assert.deepEqual(provider.firstResponseBudget('gemini-4-argon'), argonBudget);
+  assert.deepEqual(provider.firstResponseBudget('idle-only'), { idleMs: 420_000 });
   assert.deepEqual(provider.firstResponseBudget('plain'), providerBudget);
   assert.deepEqual(provider.firstResponseBudget('unlisted'), providerBudget);
   // A malformed figure is ignored; a PC that reports none leaves the watchdog default.
   assert.deepEqual(provider.firstResponseBudget('broken'), providerBudget);
   assert.equal(new ModelProxyProvider('openai', {}, channel).firstResponseBudget('plain'), null);
+  assert.deepEqual(
+    new ModelProxyProvider('openai', { modelProxy: { firstResponseBudget: { idleMs: 420_000 } } }, channel)
+      .firstResponseBudget('plain'),
+    { idleMs: 420_000 }
+  );
 });

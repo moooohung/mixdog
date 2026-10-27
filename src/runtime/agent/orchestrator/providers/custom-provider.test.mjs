@@ -196,6 +196,10 @@ test('v2 validation rejects invalid overrides and canonicalizes levels', () => {
     r2: { reasoning: { levels: [] } },
   });
   assert.deepEqual(normalizeCustomProviderConfig(ok), ok);
+  assert.equal(
+    normalizeCustomProviderConfig({ ...v2, agentIdleTimeoutSeconds: 360 }).agentIdleTimeoutSeconds,
+    360
+  );
   const bad = (patch, re) => assert.throws(() => normalizeCustomProviderConfig({ ...v2, ...patch }), re);
   const ov = (override, extra = {}) => bad({ modelOverrides: { m: override }, ...extra });
   // v2 rejects unknown fields, numeric strings and unsafe integers.
@@ -206,6 +210,8 @@ test('v2 validation rejects invalid overrides and canonicalizes levels', () => {
     ov({ reasoning: { levels: [entry] } }, /unknown level/);
   }
   bad({ discovery: { newModelsHidden: false, extra: 1 } }, /unsupported field/);
+  bad({ agentIdleTimeoutSeconds: 0 }, /positive integer/);
+  bad({ agentIdleTimeoutSeconds: '360' }, /positive integer/);
   ov({ contextWindow: '1000' }, /positive integer/);
   ov({ maxOutputTokens: 2 ** 60 }, /positive integer/);
   ov({ reasoning: { levels: ['huge'] } });
@@ -237,6 +243,20 @@ test('v2 validation rejects invalid overrides and canonicalizes levels', () => {
   bad({ discovery: { newModelsHidden: 'yes' } });
   bad({ discovery: [] });
   bad({ name: 'x'.repeat(201) });
+});
+
+test('custom providers report a configured agent idle budget on every wire engine', async () => {
+  for (const protocol of ['openai-chat', 'openai-responses', 'anthropic']) {
+    const provider = await createCustomProvider(`custom-idle-${protocol}`, {
+      ...base,
+      schemaVersion: 2,
+      protocol,
+      auth: 'none',
+      preconnect: false,
+      agentIdleTimeoutSeconds: 420,
+    });
+    assert.deepEqual(provider.firstResponseBudget('m'), { idleMs: 420_000 });
+  }
 });
 
 test('layering: discovery base, overrides by presence, manual append, hidden retained', () => {

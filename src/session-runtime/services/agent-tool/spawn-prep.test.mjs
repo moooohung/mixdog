@@ -8,7 +8,13 @@ mock.module('../../../runtime/agent/orchestrator/providers/registry.mjs', {
   namedExports: {
     getProvider: (name) =>
       name === 'antigravity-oauth'
-        ? { firstResponseBudget: (model) => ({ transportMs: `${model}:headers`, semanticMs: `${model}:output` }) }
+        ? {
+            firstResponseBudget: (model) => ({
+              transportMs: `${model}:headers`,
+              semanticMs: `${model}:output`,
+              idleMs: 420_000,
+            }),
+          }
         : name === 'proxied-antigravity'
           ? proxiedAntigravity
           : undefined,
@@ -33,7 +39,7 @@ const { ModelProxyProvider } = await import('../../../runtime/agent/orchestrator
 
 // The server-side stand-in for a provider on the PC, with the PC's budget.
 const proxiedAntigravity = new ModelProxyProvider('antigravity-oauth', {
-  modelProxy: { firstResponseBudget: { transportMs: 130_000, semanticMs: 250_000 } },
+  modelProxy: { firstResponseBudget: { transportMs: 130_000, semanticMs: 250_000, idleMs: 360_000 } },
 });
 
 function preparer(sessionSurface) {
@@ -63,6 +69,7 @@ test('watchdog overrides carry the agent definition deadline and the provider fi
       firstResponseTimeoutMs: 900_000,
       providerFirstByteTimeoutMs: 'gemini-4-argon:headers',
       providerFirstOutputTimeoutMs: 'gemini-4-argon:output',
+      providerIdleTimeoutMs: 420_000,
     }
   );
   // A proxied provider forwards the PC's budget instead of the 120s / 600s defaults.
@@ -72,12 +79,14 @@ test('watchdog overrides carry the agent definition deadline and the provider fi
       firstResponseTimeoutMs: undefined,
       providerFirstByteTimeoutMs: 130_000,
       providerFirstOutputTimeoutMs: 250_000,
+      providerIdleTimeoutMs: 360_000,
     }
   );
   assert.deepEqual(agentWatchdogOverrides({ agent: 'worker', provider: 'openai', model: 'gpt' }), {
     firstResponseTimeoutMs: undefined,
     providerFirstByteTimeoutMs: undefined,
     providerFirstOutputTimeoutMs: undefined,
+    providerIdleTimeoutMs: undefined,
   });
 });
 

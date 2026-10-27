@@ -259,6 +259,8 @@ export function resolveAgentWatchdogPolicy(agent, overrides = {}) {
     idleStaleMs = Math.max(idleStaleMs, PROVIDER_RECOVERY_FLOOR_MS);
   }
 
+  idleStaleMs = aboveProviderBudget(idleStaleMs, resolveExplicitMs(overrides.providerIdleTimeoutMs, 0));
+
   return {
     firstTransportMs,
     firstSemanticMs,

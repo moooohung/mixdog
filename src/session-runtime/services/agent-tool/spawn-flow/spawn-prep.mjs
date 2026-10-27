@@ -74,8 +74,8 @@ export function createSpawnPreparer({
   });
 
   /** Watchdog inputs for one agent run: the agent definition's own
-   *  first-response deadline and the provider's first-response budget for the
-   *  routed model (headers, and first output), handed to
+   *  first-response deadline and the provider's watchdog budget for the routed
+   *  model (headers, first output, and optional idle), handed to
    *  resolveAgentWatchdogPolicy. A provider on the shared window names none. */
   function agentWatchdogOverrides({ agent, provider, model }) {
     const budget = getProvider(provider)?.firstResponseBudget?.(model);
@@ -83,6 +83,7 @@ export function createSpawnPreparer({
       firstResponseTimeoutMs: readAgentFirstResponseTimeoutMs(agent, dataDir, STANDALONE_SOURCE_ROOT) ?? undefined,
       providerFirstByteTimeoutMs: budget?.transportMs,
       providerFirstOutputTimeoutMs: budget?.semanticMs,
+      providerIdleTimeoutMs: budget?.idleMs,
     };
   }
 

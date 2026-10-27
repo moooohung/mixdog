@@ -87,6 +87,7 @@ const V2_TOP_LEVEL_KEYS = new Set([
   'id',
   'apiKey',
   'apiKeyEnv',
+  'agentIdleTimeoutSeconds',
   'preconnect',
 ]);
 export const CUSTOM_API_KEY_ENV_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
@@ -362,6 +363,9 @@ export function normalizeCustomProviderConfig(input) {
   const auth = source.auth === undefined || source.auth === null ? 'key' : text(source.auth);
   if (!CUSTOM_PROVIDER_AUTH_MODES.includes(auth)) fail(`invalid auth: ${String(source.auth)}`);
   const apiKeyEnv = normalizeApiKeyEnv(source.apiKeyEnv);
+  const agentIdleTimeoutSeconds = legacy
+    ? lenientPositiveInt(source.agentIdleTimeoutSeconds, 'agentIdleTimeoutSeconds')
+    : strictPositiveInt(source.agentIdleTimeoutSeconds, 'agentIdleTimeoutSeconds');
   const discovery = source.discovery === undefined ? {} : source.discovery;
   if (!isPlainObject(discovery)) fail('discovery must be an object');
   onlyKnownKeys(discovery, DISCOVERY_KEYS, 'discovery');
@@ -377,6 +381,7 @@ export function normalizeCustomProviderConfig(input) {
     enabled: source.enabled !== false,
     auth,
     ...(apiKeyEnv && auth === 'key' ? { apiKeyEnv } : {}),
+    ...(agentIdleTimeoutSeconds ? { agentIdleTimeoutSeconds } : {}),
     discovery: { newModelsHidden },
     modelOverrides: normalizeOverrides(source.modelOverrides, protocol, legacy),
     ...(wires ? { wires } : {}),

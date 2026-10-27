@@ -74,6 +74,11 @@ function withCustomModels(Base, discover) {
       this._assertCustomKey();
       return super.send(...args);
     }
+    firstResponseBudget(model) {
+      const budget = typeof super.firstResponseBudget === 'function' ? super.firstResponseBudget(model) : null;
+      const idleSeconds = this.customConfig?.agentIdleTimeoutSeconds;
+      return idleSeconds ? { ...(budget || {}), idleMs: idleSeconds * 1000 } : budget;
+    }
     _customRows() {
       return effectiveCustomModelRows(this.customConfig, this._customDiscovered || [], { providerId: this.name });
     }

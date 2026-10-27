@@ -78,6 +78,7 @@ const v2 = {
   baseURL: 'http://localhost:1234/v1',
   schemaVersion: 2,
   auth: 'none',
+  agentIdleTimeoutSeconds: 420,
   discovery: { newModelsHidden: true },
   modelOverrides: {
     m: {
@@ -96,6 +97,9 @@ test('v2 custom provider input shape is validated', () => {
   for (const bad of [
     { schemaVersion: 3 },
     { auth: 'basic' },
+    { agentIdleTimeoutSeconds: 0 },
+    { agentIdleTimeoutSeconds: '420' },
+    { agentIdleTimeoutSeconds: Number.MAX_SAFE_INTEGER + 1 },
     { discovery: { x: 1 } },
     { discovery: { newModelsHidden: 'yes' } },
     { modelOverrides: [] },

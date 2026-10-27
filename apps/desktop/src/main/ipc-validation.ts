@@ -635,6 +635,7 @@ const CUSTOM_PROVIDER_KEYS = new Set([
   'baseURL',
   'apiKey',
   'apiKeyEnv',
+  'agentIdleTimeoutSeconds',
   'models',
   'schemaVersion',
   'enabled',
@@ -709,6 +710,14 @@ export function requiredCustomProviderInput(value: unknown, modelsOptional = fal
   requiredString(input.baseURL, 'custom provider baseURL', 2048);
   if (input.apiKey !== undefined && (typeof input.apiKey !== 'string' || input.apiKey.length > CUSTOM_MAX_API_KEY)) {
     throw new TypeError('custom provider apiKey is invalid.');
+  }
+  if (
+    input.agentIdleTimeoutSeconds !== undefined &&
+    (typeof input.agentIdleTimeoutSeconds !== 'number' ||
+      !Number.isSafeInteger(input.agentIdleTimeoutSeconds) ||
+      input.agentIdleTimeoutSeconds <= 0)
+  ) {
+    throw new TypeError('custom provider agentIdleTimeoutSeconds is invalid.');
   }
   if (input.apiKeyEnv !== undefined && input.apiKeyEnv !== null) {
     if (typeof input.apiKeyEnv !== 'string' || !CUSTOM_API_KEY_ENV.test(input.apiKeyEnv)) {

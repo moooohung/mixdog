@@ -90,13 +90,18 @@ export function inlineModelProxyAttachments(messages, { maxBytes = MODEL_PROXY_I
   return out ?? messages;
 }
 
-/** A first-response budget the PC reported, or null for anything malformed. */
+/** A watchdog budget the PC reported, or null when it reports no valid fields. */
 function reportedBudget(value) {
   const transportMs = Number(value?.transportMs);
   const semanticMs = Number(value?.semanticMs);
-  return transportMs > 0 && semanticMs > 0 && Number.isFinite(transportMs) && Number.isFinite(semanticMs)
-    ? { transportMs, semanticMs }
-    : null;
+  const idleMs = Number(value?.idleMs);
+  const budget = {};
+  if (transportMs > 0 && semanticMs > 0 && Number.isFinite(transportMs) && Number.isFinite(semanticMs)) {
+    budget.transportMs = transportMs;
+    budget.semanticMs = semanticMs;
+  }
+  if (idleMs > 0 && Number.isFinite(idleMs)) budget.idleMs = idleMs;
+  return Object.keys(budget).length ? budget : null;
 }
 
 export class ModelProxyProvider {
