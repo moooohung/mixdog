@@ -469,6 +469,38 @@ test('settings omit the separate OpenCode Go card when the provider is unavailab
   assert.doesNotMatch(document.querySelector('main').textContent, /OpenCode Go|Usage sign-in/);
 });
 
+test('settings expose Vertex AI service-account file, location and project override controls', async (t) => {
+  const render = harness(t);
+  await render(
+    React.createElement(ProvidersPanel, {
+      api: {},
+      pending: '',
+      run: async () => {},
+      confirm: () => {},
+      data: {
+        providerSetup: {
+          oauth: [],
+          api: [
+            {
+              id: 'vertex-ai',
+              name: 'Vertex AI',
+              authenticated: false,
+              location: 'us-east5',
+              projectId: 'override-project',
+            },
+          ],
+        },
+      },
+    })
+  );
+  const file = document.querySelector('input[aria-label="Vertex AI service-account JSON key"]');
+  assert.equal(file?.getAttribute('type'), 'file');
+  assert.equal(file?.getAttribute('accept'), 'application/json,.json');
+  assert.equal(document.querySelector('input[aria-label="Vertex AI location"]')?.value, 'us-east5');
+  assert.equal(document.querySelector('input[aria-label="Vertex AI project ID override"]')?.value, 'override-project');
+  assert.equal(document.querySelector('input[type="password"]'), null);
+});
+
 test('settings show only removal for healthy accounts, reconnect for expired accounts and a header add action', async (t) => {
   const render = harness(t);
   const calls = [];
