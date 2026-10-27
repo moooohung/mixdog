@@ -161,6 +161,29 @@ test('Vertex Flex PayGo sends the flex header on global and reports a served Fle
     /Flex PayGo is only available with the global location/
   );
   assert.equal(regional.requests.length, 0);
+
+  // Gemini 4 Argon offers Standard and Priority PayGo only.
+  const argon = recordingProvider({ location: 'global' }, () => geminiSse());
+  await assert.rejects(
+    argon.provider.send([{ role: 'user', content: 'hi' }], 'gemini-4-argon', [], {
+      modelParameters: { serviceTier: 'flex' },
+    }),
+    /Flex PayGo is not available for gemini-4-argon/
+  );
+  assert.equal(argon.requests.length, 0);
+});
+
+test('Vertex Gemini 4 Argon routes as a Google publisher model with a documented thinking level', async () => {
+  const { provider, requests } = recordingProvider({ location: 'global' }, () => geminiSse('argon-ok'));
+  const result = await provider.send([{ role: 'user', content: 'hi' }], 'gemini-4-argon', [], { effort: 'high' });
+  assert.equal(result.content, 'argon-ok');
+  assert.equal(
+    requests[0].url,
+    'https://aiplatform.googleapis.com/v1/projects/key-project/locations/global/publishers/google/models/gemini-4-argon:streamGenerateContent?alt=sse'
+  );
+  const thinking = JSON.parse(requests[0].init.body).generationConfig?.thinkingConfig;
+  assert.equal(thinking?.thinkingLevel, 'high');
+  assert.equal(Object.hasOwn(thinking || {}, 'thinkingBudget'), false);
 });
 
 test('Vertex Gemini usage is cache-exclusive like the Claude route', async () => {
@@ -187,12 +210,20 @@ test('Vertex lists its publisher models and offers Flex only on Flex-capable Gem
   const models = await provider.listModels();
   assert.deepEqual(
     models.map((model) => model.id),
-    ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3.5-flash-lite', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5']
+    [
+      'gemini-4-argon',
+      'gemini-3.8-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash-lite',
+      'claude-opus-5-5',
+      'claude-fable-5-1',
+      'claude-sonnet-5-5',
+    ]
   );
   for (const model of models) {
     assert.equal(model.provider, 'vertex-ai');
     const flex = model.modelParameterOptions?.find((option) => option.id === 'serviceTier');
-    assert.equal(Boolean(flex), model.id.startsWith('gemini-'), model.id);
+    assert.equal(Boolean(flex), model.id.startsWith('gemini-') && model.id !== 'gemini-4-argon', model.id);
     if (flex) assert.deepEqual(flex.options.map((option) => option.value), ['standard', 'flex']);
   }
 });

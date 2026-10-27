@@ -46,15 +46,34 @@ const VERTEX_FLEX_PARAMETER_OPTION = Object.freeze({
   ]),
 });
 
-// Default roster: Vertex publisher model ids, checked 2026-10-27 against the
-// Claude on Google Cloud model list
+// The Gemini models the Flex PayGo page lists (global endpoint only).
+const VERTEX_FLEX_MODELS = new Set([
+  'gemini-3.8-flash-cyber',
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite-image',
+  'gemini-3-pro-image',
+  'gemini-3.1-flash-image',
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3.1-pro-preview',
+  'gemini-3-flash-preview',
+]);
+
+// Default roster: Vertex publisher model ids, checked 2026-10-28 against the
+// Gemini 4 Argon model card
+// (https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/4-argon:
+// Standard and Priority PayGo only, no Flex), the Claude on Google Cloud model list
 // (https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude)
 // and the Flex PayGo Gemini list above. Prices come from the LiteLLM
 // `vertex_ai/` rows (see provider-catalog-registry.mjs).
 export const VERTEX_MODELS = Object.freeze([
-  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', contextWindow: 1048576, flex: true },
-  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview', contextWindow: 1048576, flex: true },
-  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite', contextWindow: 1048576, flex: true },
+  { id: 'gemini-4-argon', name: 'Gemini 4 Argon', contextWindow: 1048576 },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', contextWindow: 1048576 },
+  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview', contextWindow: 1048576 },
+  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite', contextWindow: 1048576 },
   { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', family: 'opus', contextWindow: 1000000 },
   { id: 'claude-fable-5-1', name: 'Claude Fable 5.1', family: 'fable', contextWindow: 1000000 },
   { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', family: 'sonnet', contextWindow: 1000000 },
@@ -187,6 +206,9 @@ export class VertexAIProvider {
   async _sendGemini(messages, model, tools, opts) {
     const signal = opts.signal || null;
     const flex = vertexFlexRequested(opts);
+    if (flex && !VERTEX_FLEX_MODELS.has(model)) {
+      throw new Error(`[vertex-ai] Flex PayGo is not available for ${model}`);
+    }
     if (flex && vertexLocation(this.config) !== 'global') {
       throw new Error('[vertex-ai] Flex PayGo is only available with the global location');
     }
@@ -343,10 +365,10 @@ export class VertexAIProvider {
   }
 
   async listModels() {
-    return VERTEX_MODELS.map(({ flex, ...model }) => ({
+    return VERTEX_MODELS.map((model) => ({
       ...model,
       provider: this.name,
-      ...(flex ? { modelParameterOptions: [VERTEX_FLEX_PARAMETER_OPTION] } : {}),
+      ...(VERTEX_FLEX_MODELS.has(model.id) ? { modelParameterOptions: [VERTEX_FLEX_PARAMETER_OPTION] } : {}),
     }));
   }
 
