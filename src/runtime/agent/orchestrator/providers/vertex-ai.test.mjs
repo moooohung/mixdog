@@ -20,10 +20,10 @@ function decodeJwtPart(part) {
   return JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
 }
 
-function geminiSse(text = 'ok') {
+function geminiSse(text = 'ok', usageMetadata = { promptTokenCount: 7, candidatesTokenCount: 2, totalTokenCount: 9 }) {
   const chunk = {
     candidates: [{ content: { role: 'model', parts: [{ text }] }, finishReason: 'STOP' }],
-    usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 2, totalTokenCount: 9 },
+    usageMetadata,
   };
   return new Response(`data: ${JSON.stringify(chunk)}\n\n`, {
     headers: { 'content-type': 'text/event-stream' },
@@ -101,8 +101,100 @@ test('Vertex Gemini routing reuses the Gemini body and bearer auth', async () =>
   );
   assert.equal(new Headers(requests[0].init.headers).get('authorization'), 'Bearer gcp-token');
   const body = JSON.parse(requests[0].init.body);
-  assert.equal(body.systemInstruction, 'system rule');
+  assert.deepEqual(body.systemInstruction, { parts: [{ text: 'system rule' }] });
   assert.equal(body.contents[0].role, 'user');
+  assert.equal(new Headers(requests[0].init.headers).get('x-vertex-ai-llm-shared-request-type'), null);
+});
+
+function recordingProvider(config, respond) {
+  const requests = [];
+  const provider = new VertexAIProvider({
+    apiKey: JSON.stringify(serviceAccount()),
+    ...config,
+    fetchFn: async (url, init = {}) => {
+      if (url === VERTEX_TOKEN_URI) return Response.json({ access_token: 'gcp-token', expires_in: 3600 });
+      requests.push({ url, init });
+      return respond();
+    },
+  });
+  return { provider, requests };
+}
+
+test('Vertex multi-region locations use the representative endpoints', async () => {
+  for (const location of ['us', 'eu']) {
+    const gemini = recordingProvider({ location }, () => geminiSse());
+    await gemini.provider.send([{ role: 'user', content: 'hi' }], 'gemini-3.8-flash', [], {});
+    assert.equal(
+      gemini.requests[0].url,
+      `https://aiplatform.${location}.rep.googleapis.com/v1/projects/key-project/locations/${location}/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse`
+    );
+    const claude = recordingProvider({ location }, () => claudeSse());
+    await claude.provider.send([{ role: 'user', content: 'hi' }], 'claude-sonnet-5-5', [], {});
+    assert.equal(
+      claude.requests[0].url,
+      `https://aiplatform.${location}.rep.googleapis.com/v1/projects/key-project/locations/${location}/publishers/anthropic/models/claude-sonnet-5-5:streamRawPredict`
+    );
+  }
+});
+
+test('Vertex Flex PayGo sends the flex header on global and reports a served Flex request', async () => {
+  const usage = { promptTokenCount: 7, candidatesTokenCount: 2, totalTokenCount: 9, trafficType: 'ON_DEMAND_FLEX' };
+  const { provider, requests } = recordingProvider({ location: 'global' }, () => geminiSse('flex-ok', usage));
+  const result = await provider.send([{ role: 'user', content: 'hi' }], 'gemini-3.8-flash', [], {
+    modelParameters: { serviceTier: 'flex' },
+  });
+  assert.equal(new Headers(requests[0].init.headers).get('x-vertex-ai-llm-shared-request-type'), 'flex');
+  assert.equal(result.serviceTier, 'flex');
+
+  const standard = recordingProvider({ location: 'global' }, () => geminiSse('std-ok', usage));
+  const plain = await standard.provider.send([{ role: 'user', content: 'hi' }], 'gemini-3.8-flash', [], {
+    modelParameters: { serviceTier: 'standard' },
+  });
+  assert.equal(new Headers(standard.requests[0].init.headers).get('x-vertex-ai-llm-shared-request-type'), null);
+  assert.equal(plain.serviceTier, 'flex', 'the served tier, not the requested one, is reported');
+
+  const regional = recordingProvider({ location: 'us-central1' }, () => geminiSse());
+  await assert.rejects(
+    regional.provider.send([{ role: 'user', content: 'hi' }], 'gemini-3.8-flash', [], {
+      modelParameters: { serviceTier: 'flex' },
+    }),
+    /Flex PayGo is only available with the global location/
+  );
+  assert.equal(regional.requests.length, 0);
+});
+
+test('Vertex Gemini usage is cache-exclusive like the Claude route', async () => {
+  const usage = { promptTokenCount: 1000, cachedContentTokenCount: 800, candidatesTokenCount: 5, totalTokenCount: 1005 };
+  const { provider } = recordingProvider({ location: 'global' }, () => geminiSse('cached', usage));
+  const result = await provider.send([{ role: 'user', content: 'hi' }], 'gemini-3.8-flash', [], {});
+  assert.equal(VertexAIProvider.inputExcludesCache, true);
+  assert.equal(result.usage.inputTokens, 200);
+  assert.equal(result.usage.cachedTokens, 800);
+  assert.equal(result.usage.promptTokens, 1000);
+});
+
+test('Vertex Claude on a regional location is priced as the regional SKU', async () => {
+  const regional = recordingProvider({ location: 'us-east5' }, () => claudeSse());
+  const priced = await regional.provider.send([{ role: 'user', content: 'hi' }], 'claude-sonnet-5-5', [], {});
+  assert.equal(priced.pricingModel, 'claude-sonnet-5-5@regional');
+  const global = recordingProvider({ location: 'global' }, () => claudeSse());
+  const listed = await global.provider.send([{ role: 'user', content: 'hi' }], 'claude-sonnet-5-5', [], {});
+  assert.equal(listed.pricingModel, undefined);
+});
+
+test('Vertex lists its publisher models and offers Flex only on Flex-capable Gemini models', async () => {
+  const { provider } = recordingProvider({}, () => geminiSse());
+  const models = await provider.listModels();
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3.5-flash-lite', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5']
+  );
+  for (const model of models) {
+    assert.equal(model.provider, 'vertex-ai');
+    const flex = model.modelParameterOptions?.find((option) => option.id === 'serviceTier');
+    assert.equal(Boolean(flex), model.id.startsWith('gemini-'), model.id);
+    if (flex) assert.deepEqual(flex.options.map((option) => option.value), ['standard', 'flex']);
+  }
 });
 
 test('Vertex Claude routing sends Anthropic Messages body without model', async () => {

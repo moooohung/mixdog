@@ -493,7 +493,11 @@ test('settings expose Vertex AI service-account file, location and project overr
       },
     })
   );
+  assert.equal(document.querySelector('input[aria-label="Vertex AI service-account JSON key"]'), null);
+  const connect = document.querySelector('[data-provider-connect="vertex-ai"]');
+  await act(async () => connect.click());
   const file = document.querySelector('input[aria-label="Vertex AI service-account JSON key"]');
+  assert.equal(document.activeElement, file);
   assert.equal(file?.getAttribute('type'), 'file');
   assert.equal(file?.getAttribute('accept'), 'application/json,.json');
   assert.equal(document.querySelector('input[aria-label="Vertex AI location"]')?.value, 'us-east5');

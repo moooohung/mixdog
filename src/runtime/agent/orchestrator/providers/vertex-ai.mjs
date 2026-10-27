@@ -24,11 +24,50 @@ import { parseSSEStream } from './anthropic-sse.mjs';
 import { buildAnthropicTurnResult } from './anthropic-turn-result.mjs';
 import { streamCallbacks } from './lib/send-callbacks.mjs';
 import { preparePdfTextForProvider } from './media-normalization.mjs';
-import { GEMINI_MODELS } from './lib/gemini-model-catalog.mjs';
-import { MODELS as ANTHROPIC_MODELS } from './lib/anthropic-models.mjs';
 import { VertexAccessTokenManager } from './vertex-ai-auth.mjs';
 
 const VERTEX_ANTHROPIC_VERSION = 'vertex-2023-10-16';
+
+// Flex PayGo: Gemini only, on the global endpoint only, selected per request
+// with X-Vertex-AI-LLM-Shared-Request-Type: flex (Provisioned Throughput is
+// still used first when the project has it). A served Flex request reports
+// usageMetadata.trafficType ON_DEMAND_FLEX.
+// https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/flex-paygo (verified 2026-10-27)
+export const VERTEX_SERVICE_TIER_PARAMETER = 'serviceTier';
+export const VERTEX_FLEX_TIER = 'flex';
+const VERTEX_FLEX_TRAFFIC_TYPE = 'ON_DEMAND_FLEX';
+const VERTEX_FLEX_PARAMETER_OPTION = Object.freeze({
+  id: VERTEX_SERVICE_TIER_PARAMETER,
+  label: 'Service tier',
+  kind: 'enum',
+  options: Object.freeze([
+    Object.freeze({ value: 'standard', label: 'Standard' }),
+    Object.freeze({ value: VERTEX_FLEX_TIER, label: 'Flex (50% off, slower)' }),
+  ]),
+});
+
+// Default roster: Vertex publisher model ids, checked 2026-10-27 against the
+// Claude on Google Cloud model list
+// (https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude)
+// and the Flex PayGo Gemini list above. Prices come from the LiteLLM
+// `vertex_ai/` rows (see provider-catalog-registry.mjs).
+export const VERTEX_MODELS = Object.freeze([
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', contextWindow: 1048576, flex: true },
+  { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview', contextWindow: 1048576, flex: true },
+  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite', contextWindow: 1048576, flex: true },
+  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', family: 'opus', contextWindow: 1000000 },
+  { id: 'claude-fable-5-1', name: 'Claude Fable 5.1', family: 'fable', contextWindow: 1000000 },
+  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', family: 'sonnet', contextWindow: 1000000 },
+]);
+
+// Vertex bills Claude on regional and multi-region endpoints 10% above the
+// global list price; such requests carry this pricing SKU suffix
+// (model-catalog.mjs prices it from the base SKU).
+export const VERTEX_REGIONAL_PRICING_SUFFIX = '@regional';
+
+// Multi-region locations are served by representative endpoints, not by
+// <location>-aiplatform.googleapis.com.
+const VERTEX_MULTI_REGIONS = new Set(['us', 'eu']);
 
 function vertexModel(model) {
   const raw = String(model || '').trim();
@@ -43,7 +82,22 @@ function vertexModel(model) {
 }
 
 function vertexHost(location) {
-  return location === 'global' ? 'aiplatform.googleapis.com' : `${location}-aiplatform.googleapis.com`;
+  if (location === 'global') return 'aiplatform.googleapis.com';
+  if (VERTEX_MULTI_REGIONS.has(location)) return `aiplatform.${location}.rep.googleapis.com`;
+  return `${location}-aiplatform.googleapis.com`;
+}
+
+function vertexFlexRequested(opts) {
+  return String(opts?.modelParameters?.[VERTEX_SERVICE_TIER_PARAMETER] || '').toLowerCase() === VERTEX_FLEX_TIER;
+}
+
+// Gemini's promptTokenCount includes the cached prefix. This provider's usage
+// is cache-exclusive (inputExcludesCache) because its Claude route reports it
+// that way, so the Gemini route reports the uncached remainder.
+function vertexGeminiUsage(usage) {
+  if (!usage) return usage;
+  const input = Number(usage.inputTokens) || 0;
+  return { ...usage, inputTokens: Math.max(0, input - (Number(usage.cachedTokens) || 0)) };
 }
 
 function vertexLocation(config) {
@@ -74,7 +128,8 @@ function geminiCallbacks(opts) {
 function geminiVertexBody(request) {
   return {
     contents: request.contents,
-    ...(request.systemInstruction ? { systemInstruction: request.systemInstruction } : {}),
+    // Vertex accepts only a Content object here, never a bare string.
+    ...(request.systemInstruction ? { systemInstruction: { parts: [{ text: request.systemInstruction }] } } : {}),
     ...(request.generationConfig ? { generationConfig: request.generationConfig } : {}),
     ...(request.geminiTools ? { tools: request.geminiTools } : {}),
     ...(request.toolConfig ? { toolConfig: request.toolConfig } : {}),
@@ -131,6 +186,16 @@ export class VertexAIProvider {
 
   async _sendGemini(messages, model, tools, opts) {
     const signal = opts.signal || null;
+    const flex = vertexFlexRequested(opts);
+    if (flex && vertexLocation(this.config) !== 'global') {
+      throw new Error('[vertex-ai] Flex PayGo is only available with the global location');
+    }
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(flex ? { 'X-Vertex-AI-LLM-Shared-Request-Type': VERTEX_FLEX_TIER } : {}),
+    };
+    const failureUsage = geminiFailureUsage(opts, null, model);
+    const vertexFailureUsage = { ...failureUsage, normalize: (um) => vertexGeminiUsage(failureUsage.normalize(um)) };
     const callbacks = geminiCallbacks(opts);
     const request = buildGeminiRequest(messages, model, tools, opts, null);
     const body = geminiVertexBody(request);
@@ -145,13 +210,13 @@ export class VertexAIProvider {
         signal,
         sleepFn: this.config.sleepFn,
         afterToolResult: geminiEndsWithFunctionResponse(request.contents),
-        failureUsage: geminiFailureUsage(opts, null, model),
+        failureUsage: vertexFailureUsage,
         run: async ({ signal: attemptSignal, connected }) => {
           callbacks.retractReasoning();
           const url = `${this._url('google', model, 'streamGenerateContent')}?alt=sse`;
           const res = await this._authorizedFetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify(body),
             signal: attemptSignal,
           });
@@ -171,7 +236,7 @@ export class VertexAIProvider {
             onReasoningDelta: callbacks.onReasoningDelta,
             textLeakGuard,
             label: 'Vertex AI Gemini streamGenerateContent',
-            failureUsage: geminiFailureUsage(opts, null, model),
+            failureUsage: vertexFailureUsage,
           });
           return { response, textLeakGuard };
         },
@@ -181,7 +246,7 @@ export class VertexAIProvider {
       callbacks.retractReasoning();
       const res = await this._authorizedFetch(this._url('google', model, 'generateContent'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(body),
         signal,
       });
@@ -198,7 +263,11 @@ export class VertexAIProvider {
     if (incomplete) throw incomplete;
     outcome.textLeakGuard?.releaseDeferredToolCalls?.();
     emitGeminiToolCalls(parsed.nativeToolCalls, callbacks.onToolCall);
-    return geminiSendResult(parsed, model, opts, usage);
+    const result = geminiSendResult(parsed, model, opts, vertexGeminiUsage(usage));
+    // The served tier decides the price: a Flex request can be served by
+    // Provisioned Throughput first.
+    if (usage?.raw?.trafficType === VERTEX_FLEX_TRAFFIC_TYPE) result.serviceTier = VERTEX_FLEX_TIER;
+    return result;
   }
 
   async _sendClaude(messages, model, tools, opts) {
@@ -265,14 +334,20 @@ export class VertexAIProvider {
         { onStreamItemStart: callbacks.onStreamItemStart }
       );
       assertAnthropicStreamNotEmpty(midState, parsed, 'Vertex AI Claude');
-      return buildAnthropicTurnResult(parsed, { provider: this.name, useModel: model, opts });
+      const result = buildAnthropicTurnResult(parsed, { provider: this.name, useModel: model, opts });
+      if (vertexLocation(this.config) !== 'global') result.pricingModel = `${model}${VERTEX_REGIONAL_PRICING_SUFFIX}`;
+      return result;
     } finally {
       externalSignal?.removeEventListener?.('abort', abort);
     }
   }
 
   async listModels() {
-    return [...GEMINI_MODELS, ...ANTHROPIC_MODELS].map((model) => ({ ...model, provider: this.name }));
+    return VERTEX_MODELS.map(({ flex, ...model }) => ({
+      ...model,
+      provider: this.name,
+      ...(flex ? { modelParameterOptions: [VERTEX_FLEX_PARAMETER_OPTION] } : {}),
+    }));
   }
 
   async isAvailable() {
